@@ -1,28 +1,35 @@
 """
 Gaza CCCM/Site Management Cluster — 4W Activity Dashboard
 =========================================================
-Run:
-    streamlit run app.py
+Self-contained Streamlit app for deployment on Streamlit Community Cloud.
 
-Reads the artefacts produced by validate_pipeline.py:
-    cleaned_activities.csv
-    validation_error_log.csv
-    agg_framework_split.csv (optional, recomputed if absent)
-    agg_partner_footprint.csv
-    agg_population_reach.csv
+Expects this repo layout:
+    app.py
+    validate_pipeline.py
+    data/
+        4Ws_Consolidated.xlsx
+        SM_Cluster_MonthlyActivityReporting_FINAL_TEMPLATE_260505.xlsx
+
+Run locally:    streamlit run app.py
+Deploy:         push to GitHub → share.streamlit.io
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+# Make the validator importable from the same directory
+sys.path.insert(0, str(Path(__file__).parent))
+from validate_pipeline import load_inputs, clean_and_validate
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DATA_DIR = Path("/mnt/user-data/outputs")
+DATA_DIR = Path(__file__).parent / "data"
 
 COL_MONTH     = "Reporting Month"
 COL_ORG       = "Organization Name"
@@ -48,13 +55,19 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------------------------
-# Loaders (cached)
+# Pipeline runner (cached so it only re-runs when the xlsx files change)
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner="Validating partner submissions…")
 def load_data():
-    clean = pd.read_csv(DATA_DIR / "cleaned_activities.csv")
-    errors = pd.read_csv(DATA_DIR / "validation_error_log.csv")
-    # Ensure numeric
+    """Run the full validation pipeline in-memory and return cleaned data + errors.
+
+    Cached: Streamlit re-runs this only when the underlying xlsx files change.
+    """
+    activities, index_df, sites_df = load_inputs(DATA_DIR)
+    clean, errors, _removed = clean_and_validate(activities, index_df, sites_df)
+
+    # Coerce numerics (validate_pipeline already does this internally, but the
+    # in-memory frame may carry object dtypes through the cache boundary)
     clean[COL_TOTAL] = pd.to_numeric(clean[COL_TOTAL], errors="coerce")
     for c in DEMO_COLS + PWD_COLS:
         if c in clean.columns:
@@ -63,7 +76,7 @@ def load_data():
 
 
 # ---------------------------------------------------------------------------
-# Filters
+# Sidebar filters
 # ---------------------------------------------------------------------------
 def sidebar_filters(clean: pd.DataFrame) -> pd.DataFrame:
     st.sidebar.header("Filters")
@@ -245,6 +258,15 @@ def quality_explorer(error_log: pd.DataFrame):
     st.markdown(f"**{len(view):,}** issue(s) shown.")
     st.dataframe(view, use_container_width=True, hide_index=True)
 
+    # Download button for the filtered log — useful for emailing partners
+    csv_bytes = view.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download filtered log (CSV)",
+        data=csv_bytes,
+        file_name="validation_log_filtered.csv",
+        mime="text/csv",
+    )
+
     st.markdown("##### Issue distribution by partner")
     chart_df = (error_log.groupby(["organization", "error_type"])
                          .size().reset_index(name="count"))
@@ -260,16 +282,17 @@ def quality_explorer(error_log: pd.DataFrame):
 # ---------------------------------------------------------------------------
 def main():
     st.title("Gaza Site Management Cluster — 4W Activity Dashboard")
-    st.caption("Cleaned partner submissions from `validate_pipeline.py`. "
-               "Filters apply to all sections except the Data Quality log.")
+    st.caption("Partner submissions are validated and deduplicated on every "
+               "deploy. Filters apply to all sections except the Data Quality log.")
 
     try:
         clean, errors = load_data()
-    except FileNotFoundError:
+    except FileNotFoundError as e:
         st.error(
-            f"Could not find cleaned data in `{DATA_DIR}`. "
-            "Run `python validate_pipeline.py` first."
+            f"Could not load source files from `{DATA_DIR}`. "
+            f"Make sure both xlsx files are committed to the `data/` folder."
         )
+        st.exception(e)
         return
 
     filt = sidebar_filters(clean)
