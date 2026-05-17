@@ -305,6 +305,37 @@ def end_panel():
 
 
 # ---------------------------------------------------------------------------
+# Brand-coloured cell gradient (matplotlib-free replacement for
+# Styler.background_gradient, which requires matplotlib on Streamlit Cloud)
+# ---------------------------------------------------------------------------
+def _hex_to_rgb(hx: str) -> tuple[int, int, int]:
+    hx = hx.lstrip("#")
+    return int(hx[0:2], 16), int(hx[2:4], 16), int(hx[4:6], 16)
+
+
+def brand_gradient(series: pd.Series,
+                   start_hex: str = ECRU_WHITE,
+                   end_hex: str = BURNT_SIENNA) -> list[str]:
+    """Per-cell CSS `background-color` strings, linearly interpolated between
+    two brand colours based on each value's position in `series`."""
+    s = pd.to_numeric(series, errors="coerce").fillna(0)
+    vmin, vmax = float(s.min()), float(s.max())
+    rng = vmax - vmin if vmax > vmin else 1.0
+    r1, g1, b1 = _hex_to_rgb(start_hex)
+    r2, g2, b2 = _hex_to_rgb(end_hex)
+    styles = []
+    for v in s:
+        t = (v - vmin) / rng
+        t = t ** 0.75  # gentle curve so small values still get a hint of colour
+        r = int(r1 + (r2 - r1) * t)
+        g = int(g1 + (g2 - g1) * t)
+        b = int(b1 + (b2 - b1) * t)
+        text = BALTIC_SEA if t < 0.55 else "white"
+        styles.append(f"background-color: rgb({r},{g},{b}); color: {text};")
+    return styles
+
+
+# ---------------------------------------------------------------------------
 # Sidebar (filters + branding)
 # ---------------------------------------------------------------------------
 def sidebar_filters(clean: pd.DataFrame) -> pd.DataFrame:
@@ -651,12 +682,11 @@ def table_partner_presence(df: pd.DataFrame):
              .rename(columns={COL_ORG: "Partner"}))
     tbl["Reach"] = tbl["Reach"].fillna(0).astype(int)
 
-    # Style with brand colors
+    # Style with brand colors (matplotlib-free)
     styled = (tbl.style
                 .format({"Activities": "{:,}", "Sites": "{:,}",
                          "Governorates": "{:,}", "Reach": "{:,}"})
-                .background_gradient(subset=["Reach"],
-                                     cmap="YlOrBr", vmin=0)
+                .apply(lambda s: brand_gradient(s), subset=["Reach"])
                 .set_properties(**{
                     "font-family": "Inter, Arial, sans-serif",
                     "font-size": "12px",
@@ -700,7 +730,7 @@ def table_top_sites(df: pd.DataFrame):
     )
     styled = (tbl.style
                 .format({"Reach": "{:,}"})
-                .background_gradient(subset=["Reach"], cmap="YlOrBr")
+                .apply(lambda s: brand_gradient(s), subset=["Reach"])
                 .set_properties(**{"font-family": "Inter, Arial",
                                    "font-size": "11px"})
                 .set_table_styles([
